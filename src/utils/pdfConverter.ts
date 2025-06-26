@@ -1,3 +1,4 @@
+
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import { readFileAsText, readFileAsDataURL } from './fileUtils';
@@ -27,24 +28,27 @@ const convertImageToPDF = async (file: File, pdf: jsPDF): Promise<string> => {
       const maxHeight = pageHeight - (margin * 2);
       
       // Original image dimensions
-      let imgWidth = img.naturalWidth || img.width;
-      let imgHeight = img.naturalHeight || img.height;
+      const originalWidth = img.naturalWidth || img.width;
+      const originalHeight = img.naturalHeight || img.height;
       
       // Calculate aspect ratio
-      const aspectRatio = imgWidth / imgHeight;
+      const aspectRatio = originalWidth / originalHeight;
       
-      // Scale to fit page while maintaining aspect ratio
-      if (imgWidth > maxWidth) {
-        imgWidth = maxWidth;
-        imgHeight = imgWidth / aspectRatio;
+      // Calculate display dimensions to fit page while maintaining aspect ratio
+      let displayWidth = originalWidth;
+      let displayHeight = originalHeight;
+      
+      if (displayWidth > maxWidth) {
+        displayWidth = maxWidth;
+        displayHeight = displayWidth / aspectRatio;
       }
       
-      if (imgHeight > maxHeight) {
-        imgHeight = maxHeight;
-        imgWidth = imgHeight * aspectRatio;
+      if (displayHeight > maxHeight) {
+        displayHeight = maxHeight;
+        displayWidth = displayHeight * aspectRatio;
       }
       
-      // Create high-quality canvas
+      // Create high-resolution canvas - use much higher scale for better quality
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
       
@@ -53,34 +57,53 @@ const convertImageToPDF = async (file: File, pdf: jsPDF): Promise<string> => {
         return;
       }
       
-      // Set canvas size to maintain quality
-      const scale = Math.min(2, Math.max(imgWidth / (img.naturalWidth || img.width), 1));
-      canvas.width = imgWidth * scale;
-      canvas.height = imgHeight * scale;
+      // Use high DPI scaling - increase canvas resolution significantly
+      const dpiScale = 4; // Increase from 2 to 4 for much better quality
+      canvas.width = originalWidth * dpiScale;
+      canvas.height = originalHeight * dpiScale;
       
-      // Enable high-quality rendering
+      // Scale the context to match the DPI
+      ctx.scale(dpiScale, dpiScale);
+      
+      // Enable highest quality rendering settings
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = 'high';
       
-      // Draw image with high quality
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      // Additional quality settings
+      ctx.globalCompositeOperation = 'source-over';
       
-      // Convert to high-quality data URL
+      // Draw image at original size with high quality
+      ctx.drawImage(img, 0, 0, originalWidth, originalHeight);
+      
+      // Convert to highest quality data URL
       const format = file.type.includes('png') ? 'image/png' : 'image/jpeg';
-      const quality = format === 'image/jpeg' ? 0.95 : undefined;
+      const quality = format === 'image/jpeg' ? 1.0 : undefined; // Maximum quality
       const imgData = canvas.toDataURL(format, quality);
       
       // Center the image on the PDF page
-      const x = (pageWidth - imgWidth) / 2;
-      const y = (pageHeight - imgHeight) / 2;
+      const x = (pageWidth - displayWidth) / 2;
+      const y = (pageHeight - displayHeight) / 2;
       
-      // Add image to PDF with proper format
+      // Add image to PDF with proper format and compression settings
       const pdfFormat = format === 'image/png' ? 'PNG' : 'JPEG';
-      pdf.addImage(imgData, pdfFormat, x, y, imgWidth, imgHeight);
       
-      const pdfBlob = pdf.output('blob');
-      const pdfUrl = URL.createObjectURL(pdfBlob);
-      resolve(pdfUrl);
+      try {
+        pdf.addImage(imgData, pdfFormat, x, y, displayWidth, displayHeight, undefined, 'MEDIUM');
+        
+        const pdfBlob = pdf.output('blob');
+        const pdfUrl = URL.createObjectURL(pdfBlob);
+        resolve(pdfUrl);
+      } catch (error) {
+        // Fallback with different compression if the high-quality version fails
+        try {
+          pdf.addImage(imgData, pdfFormat, x, y, displayWidth, displayHeight);
+          const pdfBlob = pdf.output('blob');
+          const pdfUrl = URL.createObjectURL(pdfBlob);
+          resolve(pdfUrl);
+        } catch (fallbackError) {
+          reject(new Error('Failed to add image to PDF'));
+        }
+      }
     };
     
     img.onerror = () => reject(new Error('Failed to load image'));
