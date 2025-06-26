@@ -1,3 +1,4 @@
+
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import { createWorker } from 'tesseract.js';
@@ -94,19 +95,19 @@ const convertImageToPDF = async (file: File, pdf: jsPDF): Promise<string> => {
           // Perform OCR on the image
           console.log('Starting OCR processing...');
           const worker = await createWorker('eng');
-          const { data: { text, words } } = await worker.recognize(dataUrl);
+          const ocrResult = await worker.recognize(dataUrl);
           await worker.terminate();
           
-          console.log('OCR completed, extracted text:', text);
+          console.log('OCR completed, extracted text:', ocrResult.data.text);
           
           // Add invisible text layer for OCR text
-          if (text && text.trim()) {
+          if (ocrResult.data.text && ocrResult.data.text.trim()) {
             pdf.setTextColor(255, 255, 255, 0); // Make text invisible
             pdf.setFontSize(12);
             
             // Add OCR text as invisible text layer
-            if (words && words.length > 0) {
-              words.forEach(word => {
+            if (ocrResult.data.words && ocrResult.data.words.length > 0) {
+              ocrResult.data.words.forEach(word => {
                 if (word.text && word.bbox) {
                   // Calculate text position relative to the image position on PDF
                   const textX = x + (word.bbox.x0 / originalWidth) * displayWidth;
@@ -122,7 +123,7 @@ const convertImageToPDF = async (file: File, pdf: jsPDF): Promise<string> => {
               });
             } else {
               // Fallback: add all text at the top of the image
-              pdf.text(text, x, y + 20);
+              pdf.text(ocrResult.data.text, x, y + 20);
             }
           }
           
