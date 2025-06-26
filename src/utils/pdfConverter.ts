@@ -1,4 +1,3 @@
-
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import { readFileAsText, readFileAsDataURL } from './fileUtils';
@@ -19,6 +18,33 @@ const convertImageToPDF = async (file: File, pdf: jsPDF): Promise<string> => {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
+      // Get PDF page dimensions
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 10;
+      
+      const maxWidth = pageWidth - (margin * 2);
+      const maxHeight = pageHeight - (margin * 2);
+      
+      // Original image dimensions
+      let imgWidth = img.naturalWidth || img.width;
+      let imgHeight = img.naturalHeight || img.height;
+      
+      // Calculate aspect ratio
+      const aspectRatio = imgWidth / imgHeight;
+      
+      // Scale to fit page while maintaining aspect ratio
+      if (imgWidth > maxWidth) {
+        imgWidth = maxWidth;
+        imgHeight = imgWidth / aspectRatio;
+      }
+      
+      if (imgHeight > maxHeight) {
+        imgHeight = maxHeight;
+        imgWidth = imgHeight * aspectRatio;
+      }
+      
+      // Create high-quality canvas
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
       
@@ -27,38 +53,30 @@ const convertImageToPDF = async (file: File, pdf: jsPDF): Promise<string> => {
         return;
       }
       
-      // Calculate dimensions to fit PDF page
-      const pageWidth = pdf.internal.pageSize.getWidth();
-      const pageHeight = pdf.internal.pageSize.getHeight();
-      const margin = 20;
+      // Set canvas size to maintain quality
+      const scale = Math.min(2, Math.max(imgWidth / (img.naturalWidth || img.width), 1));
+      canvas.width = imgWidth * scale;
+      canvas.height = imgHeight * scale;
       
-      const maxWidth = pageWidth - (margin * 2);
-      const maxHeight = pageHeight - (margin * 2);
+      // Enable high-quality rendering
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
       
-      let { width, height } = img;
+      // Draw image with high quality
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       
-      // Scale image to fit page while maintaining aspect ratio
-      if (width > maxWidth || height > maxHeight) {
-        const widthRatio = maxWidth / width;
-        const heightRatio = maxHeight / height;
-        const ratio = Math.min(widthRatio, heightRatio);
-        
-        width *= ratio;
-        height *= ratio;
-      }
+      // Convert to high-quality data URL
+      const format = file.type.includes('png') ? 'image/png' : 'image/jpeg';
+      const quality = format === 'image/jpeg' ? 0.95 : undefined;
+      const imgData = canvas.toDataURL(format, quality);
       
-      canvas.width = width;
-      canvas.height = height;
+      // Center the image on the PDF page
+      const x = (pageWidth - imgWidth) / 2;
+      const y = (pageHeight - imgHeight) / 2;
       
-      ctx.drawImage(img, 0, 0, width, height);
-      
-      const imgData = canvas.toDataURL('image/jpeg', 0.8);
-      
-      // Center the image on the page
-      const x = (pageWidth - width) / 2;
-      const y = (pageHeight - height) / 2;
-      
-      pdf.addImage(imgData, 'JPEG', x, y, width, height);
+      // Add image to PDF with proper format
+      const pdfFormat = format === 'image/png' ? 'PNG' : 'JPEG';
+      pdf.addImage(imgData, pdfFormat, x, y, imgWidth, imgHeight);
       
       const pdfBlob = pdf.output('blob');
       const pdfUrl = URL.createObjectURL(pdfBlob);
@@ -66,6 +84,7 @@ const convertImageToPDF = async (file: File, pdf: jsPDF): Promise<string> => {
     };
     
     img.onerror = () => reject(new Error('Failed to load image'));
+    img.crossOrigin = 'anonymous'; // Handle CORS issues
     img.src = dataUrl;
   });
 };
