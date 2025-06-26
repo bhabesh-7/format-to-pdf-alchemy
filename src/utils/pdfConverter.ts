@@ -1,6 +1,6 @@
-
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
+import { createWorker } from 'tesseract.js';
 import { readFileAsText, readFileAsDataURL } from './fileUtils';
 
 export const convertToPDF = async (file: File, type: 'image' | 'document'): Promise<string> => {
@@ -16,93 +16,134 @@ export const convertToPDF = async (file: File, type: 'image' | 'document'): Prom
 const convertImageToPDF = async (file: File, pdf: jsPDF): Promise<string> => {
   const dataUrl = await readFileAsDataURL(file);
   
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
     const img = new Image();
-    img.onload = () => {
-      // Get PDF page dimensions
-      const pageWidth = pdf.internal.pageSize.getWidth();
-      const pageHeight = pdf.internal.pageSize.getHeight();
-      const margin = 10;
-      
-      const maxWidth = pageWidth - (margin * 2);
-      const maxHeight = pageHeight - (margin * 2);
-      
-      // Original image dimensions
-      const originalWidth = img.naturalWidth || img.width;
-      const originalHeight = img.naturalHeight || img.height;
-      
-      // Calculate aspect ratio
-      const aspectRatio = originalWidth / originalHeight;
-      
-      // Calculate display dimensions to fit page while maintaining aspect ratio
-      let displayWidth = originalWidth;
-      let displayHeight = originalHeight;
-      
-      if (displayWidth > maxWidth) {
-        displayWidth = maxWidth;
-        displayHeight = displayWidth / aspectRatio;
-      }
-      
-      if (displayHeight > maxHeight) {
-        displayHeight = maxHeight;
-        displayWidth = displayHeight * aspectRatio;
-      }
-      
-      // Create high-resolution canvas - use much higher scale for better quality
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      
-      if (!ctx) {
-        reject(new Error('Canvas context not available'));
-        return;
-      }
-      
-      // Use high DPI scaling - increase canvas resolution significantly
-      const dpiScale = 4; // Increase from 2 to 4 for much better quality
-      canvas.width = originalWidth * dpiScale;
-      canvas.height = originalHeight * dpiScale;
-      
-      // Scale the context to match the DPI
-      ctx.scale(dpiScale, dpiScale);
-      
-      // Enable highest quality rendering settings
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      
-      // Additional quality settings
-      ctx.globalCompositeOperation = 'source-over';
-      
-      // Draw image at original size with high quality
-      ctx.drawImage(img, 0, 0, originalWidth, originalHeight);
-      
-      // Convert to highest quality data URL
-      const format = file.type.includes('png') ? 'image/png' : 'image/jpeg';
-      const quality = format === 'image/jpeg' ? 1.0 : undefined; // Maximum quality
-      const imgData = canvas.toDataURL(format, quality);
-      
-      // Center the image on the PDF page
-      const x = (pageWidth - displayWidth) / 2;
-      const y = (pageHeight - displayHeight) / 2;
-      
-      // Add image to PDF with proper format and compression settings
-      const pdfFormat = format === 'image/png' ? 'PNG' : 'JPEG';
-      
+    img.onload = async () => {
       try {
-        pdf.addImage(imgData, pdfFormat, x, y, displayWidth, displayHeight, undefined, 'MEDIUM');
+        // Get PDF page dimensions
+        const pageWidth = pdf.internal.pageSize.getWidth();
+        const pageHeight = pdf.internal.pageSize.getHeight();
+        const margin = 10;
         
-        const pdfBlob = pdf.output('blob');
-        const pdfUrl = URL.createObjectURL(pdfBlob);
-        resolve(pdfUrl);
-      } catch (error) {
-        // Fallback with different compression if the high-quality version fails
+        const maxWidth = pageWidth - (margin * 2);
+        const maxHeight = pageHeight - (margin * 2);
+        
+        // Original image dimensions
+        const originalWidth = img.naturalWidth || img.width;
+        const originalHeight = img.naturalHeight || img.height;
+        
+        // Calculate aspect ratio
+        const aspectRatio = originalWidth / originalHeight;
+        
+        // Calculate display dimensions to fit page while maintaining aspect ratio
+        let displayWidth = originalWidth;
+        let displayHeight = originalHeight;
+        
+        if (displayWidth > maxWidth) {
+          displayWidth = maxWidth;
+          displayHeight = displayWidth / aspectRatio;
+        }
+        
+        if (displayHeight > maxHeight) {
+          displayHeight = maxHeight;
+          displayWidth = displayHeight * aspectRatio;
+        }
+        
+        // Create high-resolution canvas - use much higher scale for better quality
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        if (!ctx) {
+          reject(new Error('Canvas context not available'));
+          return;
+        }
+        
+        // Use high DPI scaling - increase canvas resolution significantly
+        const dpiScale = 4; // Increase from 2 to 4 for much better quality
+        canvas.width = originalWidth * dpiScale;
+        canvas.height = originalHeight * dpiScale;
+        
+        // Scale the context to match the DPI
+        ctx.scale(dpiScale, dpiScale);
+        
+        // Enable highest quality rendering settings
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        
+        // Additional quality settings
+        ctx.globalCompositeOperation = 'source-over';
+        
+        // Draw image at original size with high quality
+        ctx.drawImage(img, 0, 0, originalWidth, originalHeight);
+        
+        // Convert to highest quality data URL
+        const format = file.type.includes('png') ? 'image/png' : 'image/jpeg';
+        const quality = format === 'image/jpeg' ? 1.0 : undefined; // Maximum quality
+        const imgData = canvas.toDataURL(format, quality);
+        
+        // Center the image on the PDF page
+        const x = (pageWidth - displayWidth) / 2;
+        const y = (pageHeight - displayHeight) / 2;
+        
+        // Add image to PDF with proper format and compression settings
+        const pdfFormat = format === 'image/png' ? 'PNG' : 'JPEG';
+        
         try {
-          pdf.addImage(imgData, pdfFormat, x, y, displayWidth, displayHeight);
+          pdf.addImage(imgData, pdfFormat, x, y, displayWidth, displayHeight, undefined, 'MEDIUM');
+          
+          // Perform OCR on the image
+          console.log('Starting OCR processing...');
+          const worker = await createWorker('eng');
+          const { data: { text, words } } = await worker.recognize(dataUrl);
+          await worker.terminate();
+          
+          console.log('OCR completed, extracted text:', text);
+          
+          // Add invisible text layer for OCR text
+          if (text && text.trim()) {
+            pdf.setTextColor(255, 255, 255, 0); // Make text invisible
+            pdf.setFontSize(12);
+            
+            // Add OCR text as invisible text layer
+            if (words && words.length > 0) {
+              words.forEach(word => {
+                if (word.text && word.bbox) {
+                  // Calculate text position relative to the image position on PDF
+                  const textX = x + (word.bbox.x0 / originalWidth) * displayWidth;
+                  const textY = y + (word.bbox.y0 / originalHeight) * displayHeight;
+                  
+                  // Calculate font size based on word height
+                  const wordHeight = word.bbox.y1 - word.bbox.y0;
+                  const fontSize = Math.max(8, (wordHeight / originalHeight) * displayHeight * 0.8);
+                  
+                  pdf.setFontSize(fontSize);
+                  pdf.text(word.text, textX, textY);
+                }
+              });
+            } else {
+              // Fallback: add all text at the top of the image
+              pdf.text(text, x, y + 20);
+            }
+          }
+          
           const pdfBlob = pdf.output('blob');
           const pdfUrl = URL.createObjectURL(pdfBlob);
           resolve(pdfUrl);
-        } catch (fallbackError) {
-          reject(new Error('Failed to add image to PDF'));
+        } catch (error) {
+          console.error('Error during PDF generation or OCR:', error);
+          // Fallback with different compression if the high-quality version fails
+          try {
+            pdf.addImage(imgData, pdfFormat, x, y, displayWidth, displayHeight);
+            const pdfBlob = pdf.output('blob');
+            const pdfUrl = URL.createObjectURL(pdfBlob);
+            resolve(pdfUrl);
+          } catch (fallbackError) {
+            reject(new Error('Failed to add image to PDF'));
+          }
         }
+      } catch (error) {
+        console.error('Error in image processing:', error);
+        reject(error);
       }
     };
     
