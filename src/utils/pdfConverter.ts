@@ -1,293 +1,207 @@
-
 import jsPDF from 'jspdf';
-import html2canvas from 'html2canvas';
-import { createWorker } from 'tesseract.js';
-import { readFileAsText, readFileAsDataURL } from './fileUtils';
+import * as Tesseract from 'tesseract.js';
 
-export const convertToPDF = async (file: File, type: 'image' | 'document'): Promise<string> => {
-  const pdf = new jsPDF();
-  
-  if (type === 'image') {
-    return convertImageToPDF(file, pdf);
-  } else {
-    return convertDocumentToPDF(file, pdf);
+type FileConversion = {
+  file: File;
+  type: 'image' | 'pdf';
+};
+
+type FileConversionResult = {
+  blob: Blob | null;
+  error: string | null;
+};
+
+const getFileExtension = (mimeType: string): string => {
+  switch (mimeType) {
+    case 'image/jpeg':
+      return 'jpeg';
+    case 'image/png':
+      return 'png';
+    case 'image/gif':
+      return 'gif';
+    case 'image/bmp':
+      return 'bmp';
+    case 'image/webp':
+      return 'webp';
+    default:
+      return 'jpeg'; // Default to jpeg
   }
 };
 
-const convertImageToPDF = async (file: File, pdf: jsPDF): Promise<string> => {
-  const dataUrl = await readFileAsDataURL(file);
-  
-  return new Promise(async (resolve, reject) => {
-    const img = new Image();
-    img.onload = async () => {
-      try {
-        // Get PDF page dimensions
-        const pageWidth = pdf.internal.pageSize.getWidth();
-        const pageHeight = pdf.internal.pageSize.getHeight();
-        const margin = 10;
-        
-        const maxWidth = pageWidth - (margin * 2);
-        const maxHeight = pageHeight - (margin * 2);
-        
-        // Original image dimensions
-        const originalWidth = img.naturalWidth || img.width;
-        const originalHeight = img.naturalHeight || img.height;
-        
-        // Calculate aspect ratio
-        const aspectRatio = originalWidth / originalHeight;
-        
-        // Calculate display dimensions to fit page while maintaining aspect ratio
-        let displayWidth = originalWidth;
-        let displayHeight = originalHeight;
-        
-        if (displayWidth > maxWidth) {
-          displayWidth = maxWidth;
-          displayHeight = displayWidth / aspectRatio;
+const performOCR = async (
+  canvas: HTMLCanvasElement, 
+  onProgress?: (progress: number) => void
+): Promise<Tesseract.RecognizeResult> => {
+  return new Promise((resolve, reject) => {
+    Tesseract.recognize(canvas, 'eng', {
+      logger: m => {
+        if (m.status === 'recognizing text' && onProgress) {
+          onProgress(m.progress);
         }
-        
-        if (displayHeight > maxHeight) {
-          displayHeight = maxHeight;
-          displayWidth = displayHeight * aspectRatio;
-        }
-        
-        // Create high-resolution canvas - use much higher scale for better quality
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        
-        if (!ctx) {
-          reject(new Error('Canvas context not available'));
-          return;
-        }
-        
-        // Use high DPI scaling - increase canvas resolution significantly
-        const dpiScale = 4; // Increase from 2 to 4 for much better quality
-        canvas.width = originalWidth * dpiScale;
-        canvas.height = originalHeight * dpiScale;
-        
-        // Scale the context to match the DPI
-        ctx.scale(dpiScale, dpiScale);
-        
-        // Enable highest quality rendering settings
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-        
-        // Additional quality settings
-        ctx.globalCompositeOperation = 'source-over';
-        
-        // Draw image at original size with high quality
-        ctx.drawImage(img, 0, 0, originalWidth, originalHeight);
-        
-        // Convert to highest quality data URL
-        const format = file.type.includes('png') ? 'image/png' : 'image/jpeg';
-        const quality = format === 'image/jpeg' ? 1.0 : undefined; // Maximum quality
-        const imgData = canvas.toDataURL(format, quality);
-        
-        // Center the image on the PDF page
-        const x = (pageWidth - displayWidth) / 2;
-        const y = (pageHeight - displayHeight) / 2;
-        
-        // Add image to PDF with proper format and compression settings
-        const pdfFormat = format === 'image/png' ? 'PNG' : 'JPEG';
-        
-        try {
-          pdf.addImage(imgData, pdfFormat, x, y, displayWidth, displayHeight, undefined, 'MEDIUM');
-          
-          // Perform OCR on the image
-          console.log('Starting OCR processing...');
-          const worker = await createWorker('eng');
-          const ocrResult = await worker.recognize(dataUrl);
-          await worker.terminate();
-          
-          console.log('OCR completed, extracted text:', ocrResult.data.text);
-          
-          // Add invisible text layer for OCR text
-          if (ocrResult.data.text && ocrResult.data.text.trim()) {
-            pdf.setTextColor(255, 255, 255, 0); // Make text invisible
-            pdf.setFontSize(12);
-            
-            // Add OCR text as invisible text layer
-            if (ocrResult.data.words && ocrResult.data.words.length > 0) {
-              ocrResult.data.words.forEach(word => {
-                if (word.text && word.bbox) {
-                  // Calculate text position relative to the image position on PDF
-                  const textX = x + (word.bbox.x0 / originalWidth) * displayWidth;
-                  const textY = y + (word.bbox.y0 / originalHeight) * displayHeight;
-                  
-                  // Calculate font size based on word height
-                  const wordHeight = word.bbox.y1 - word.bbox.y0;
-                  const fontSize = Math.max(8, (wordHeight / originalHeight) * displayHeight * 0.8);
-                  
-                  pdf.setFontSize(fontSize);
-                  pdf.text(word.text, textX, textY);
-                }
-              });
-            } else {
-              // Fallback: add all text at the top of the image
-              pdf.text(ocrResult.data.text, x, y + 20);
-            }
-          }
-          
-          const pdfBlob = pdf.output('blob');
-          const pdfUrl = URL.createObjectURL(pdfBlob);
-          resolve(pdfUrl);
-        } catch (error) {
-          console.error('Error during PDF generation or OCR:', error);
-          // Fallback with different compression if the high-quality version fails
-          try {
-            pdf.addImage(imgData, pdfFormat, x, y, displayWidth, displayHeight);
-            const pdfBlob = pdf.output('blob');
-            const pdfUrl = URL.createObjectURL(pdfBlob);
-            resolve(pdfUrl);
-          } catch (fallbackError) {
-            reject(new Error('Failed to add image to PDF'));
-          }
-        }
-      } catch (error) {
-        console.error('Error in image processing:', error);
-        reject(error);
       }
-    };
-    
-    img.onerror = () => reject(new Error('Failed to load image'));
-    img.crossOrigin = 'anonymous'; // Handle CORS issues
-    img.src = dataUrl;
+    }).then(result => {
+      resolve(result);
+    }).catch(error => {
+      reject(error);
+    });
   });
 };
 
-const convertDocumentToPDF = async (file: File, pdf: jsPDF): Promise<string> => {
-  const extension = file.name.split('.').pop()?.toLowerCase();
-  
-  if (extension === 'txt' || extension === 'html') {
-    return convertTextToPDF(file, pdf, extension === 'html');
-  } else if (extension === 'doc' || extension === 'docx') {
-    // For now, treat as text. In a real application, you'd use libraries like mammoth.js
-    return convertTextToPDF(file, pdf, false);
-  } else {
-    return convertTextToPDF(file, pdf, false);
+const addOCRTextToPDF = (
+  pdf: jsPDF, 
+  ocrResult: Tesseract.RecognizeResult, 
+  canvasWidth: number, 
+  canvasHeight: number,
+  pdfWidth: number,
+  pdfHeight: number
+) => {
+  const scaleX = pdfWidth / canvasWidth;
+  const scaleY = pdfHeight / canvasHeight;
+
+  // Access words from the data property of the OCR result
+  if (ocrResult.data && ocrResult.data.words) {
+    ocrResult.data.words.forEach((word: any) => {
+      if (word.text && word.text.trim() && word.bbox) {
+        const x = word.bbox.x0 * scaleX;
+        const y = word.bbox.y0 * scaleY;
+        const width = (word.bbox.x1 - word.bbox.x0) * scaleX;
+        const height = (word.bbox.y1 - word.bbox.y0) * scaleY;
+        
+        // Calculate appropriate font size based on bounding box height
+        const fontSize = Math.max(8, Math.min(height * 0.8, 16));
+        
+        pdf.setFontSize(fontSize);
+        pdf.setTextColor(0, 0, 0, 0); // Invisible text
+        pdf.text(word.text, x, y + height);
+      }
+    });
   }
 };
 
-const convertTextToPDF = async (file: File, pdf: jsPDF, isHtml: boolean): Promise<string> => {
-  const text = await readFileAsText(file);
-  
-  if (isHtml) {
-    // Create a temporary div to render HTML
-    const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = text;
-    tempDiv.style.width = '800px';
-    tempDiv.style.padding = '20px';
-    tempDiv.style.fontFamily = 'Arial, sans-serif';
-    tempDiv.style.fontSize = '14px';
-    tempDiv.style.lineHeight = '1.5';
-    tempDiv.style.position = 'absolute';
-    tempDiv.style.left = '-9999px';
-    
-    document.body.appendChild(tempDiv);
-    
-    try {
-      const canvas = await html2canvas(tempDiv, {
-        scale: 2,
-        useCORS: true,
-        allowTaint: true
-      });
-      
-      const imgData = canvas.toDataURL('image/png');
-      const imgWidth = pdf.internal.pageSize.getWidth() - 20;
-      const imgHeight = (canvas.height * imgWidth) / canvas.width;
-      
-      let position = 10;
-      const pageHeight = pdf.internal.pageSize.getHeight() - 20;
-      
-      if (imgHeight > pageHeight) {
-        // Split across multiple pages if needed
-        let remainingHeight = imgHeight;
-        let sourceY = 0;
-        
-        while (remainingHeight > 0) {
-          const currentHeight = Math.min(remainingHeight, pageHeight);
-          const currentCanvas = document.createElement('canvas');
-          const currentCtx = currentCanvas.getContext('2d');
-          
-          if (currentCtx) {
-            currentCanvas.width = canvas.width;
-            currentCanvas.height = (currentHeight * canvas.width) / imgWidth;
-            
-            currentCtx.drawImage(
-              canvas,
-              0, sourceY,
-              canvas.width, (currentHeight * canvas.width) / imgWidth,
-              0, 0,
-              canvas.width, (currentHeight * canvas.width) / imgWidth
-            );
-            
-            const currentImgData = currentCanvas.toDataURL('image/png');
-            pdf.addImage(currentImgData, 'PNG', 10, position, imgWidth, currentHeight);
-            
-            remainingHeight -= currentHeight;
-            sourceY += (currentHeight * canvas.width) / imgWidth;
-            
-            if (remainingHeight > 0) {
-              pdf.addPage();
-              position = 10;
-            }
-          }
+export const convertImageToPdf = async (
+  file: File, 
+  onProgress?: (progress: number) => void
+): Promise<Blob> => {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = async () => {
+      try {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error('Could not get canvas context'));
+          return;
         }
-      } else {
-        pdf.addImage(imgData, 'PNG', 10, position, imgWidth, imgHeight);
-      }
-      
-      document.body.removeChild(tempDiv);
-    } catch (error) {
-      document.body.removeChild(tempDiv);
-      throw error;
-    }
-  } else {
-    // Handle plain text
-    const lines = text.split('\n');
-    const pageHeight = pdf.internal.pageSize.getHeight();
-    const lineHeight = 6;
-    const margin = 20;
-    let yPosition = margin;
-    
-    pdf.setFontSize(12);
-    
-    for (const line of lines) {
-      if (yPosition > pageHeight - margin) {
-        pdf.addPage();
-        yPosition = margin;
-      }
-      
-      // Handle long lines by wrapping them
-      const maxLineWidth = pdf.internal.pageSize.getWidth() - (margin * 2);
-      const words = line.split(' ');
-      let currentLine = '';
-      
-      for (const word of words) {
-        const testLine = currentLine + (currentLine ? ' ' : '') + word;
-        const textWidth = pdf.getTextWidth(testLine);
-        
-        if (textWidth > maxLineWidth && currentLine) {
-          pdf.text(currentLine, margin, yPosition);
-          yPosition += lineHeight;
-          currentLine = word;
-          
-          if (yPosition > pageHeight - margin) {
-            pdf.addPage();
-            yPosition = margin;
-          }
+
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx.drawImage(img, 0, 0);
+
+        const aspectRatio = img.width / img.height;
+        let pdfWidth = 210; // A4 width in mm
+        let pdfHeight = 297; // A4 height in mm
+
+        if (aspectRatio > pdfWidth / pdfHeight) {
+          pdfHeight = pdfWidth / aspectRatio;
         } else {
-          currentLine = testLine;
+          pdfWidth = pdfHeight * aspectRatio;
         }
+
+        const pdf = new jsPDF({
+          orientation: pdfWidth > pdfHeight ? 'landscape' : 'portrait',
+          unit: 'mm',
+          format: [pdfWidth, pdfHeight]
+        });
+
+        // Add image to PDF
+        const imgData = canvas.toDataURL('image/jpeg', 0.8);
+        pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
+
+        try {
+          // Perform OCR
+          onProgress?.(0);
+          const ocrResult = await performOCR(canvas, (progress) => {
+            onProgress?.(progress * 0.8); // OCR takes 80% of the progress
+          });
+
+          // Add invisible text layer for copy functionality
+          addOCRTextToPDF(pdf, ocrResult, canvas.width, canvas.height, pdfWidth, pdfHeight);
+          
+          onProgress?.(100);
+        } catch (ocrError) {
+          console.warn('OCR failed, creating PDF without text layer:', ocrError);
+          onProgress?.(100);
+        }
+
+        const pdfBlob = pdf.output('blob');
+        resolve(pdfBlob);
+      } catch (error) {
+        reject(error);
       }
-      
-      if (currentLine) {
-        pdf.text(currentLine, margin, yPosition);
-        yPosition += lineHeight;
-      }
+    };
+
+    img.onerror = () => reject(new Error('Failed to load image'));
+    img.src = URL.createObjectURL(file);
+  });
+};
+
+export const convertPdfToImage = async (file: File): Promise<FileConversionResult> => {
+  try {
+    const pdfData = await file.arrayBuffer();
+    const pdfjsLib = await import('pdfjs-dist');
+    pdfjsLib.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.js`;
+
+    const pdf = await pdfjsLib.getDocument(pdfData).promise;
+    const page = await pdf.getPage(1);
+
+    const viewport = page.getViewport({ scale: 1.5 });
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    if (!context) {
+      throw new Error('Could not get canvas context');
     }
+    canvas.height = viewport.height;
+    canvas.width = viewport.width;
+
+    const renderContext = {
+      canvasContext: context,
+      viewport: viewport,
+    };
+
+    await page.render(renderContext).promise;
+
+    const imgData = canvas.toDataURL('image/jpeg');
+    const blob = await (await fetch(imgData)).blob();
+    const imageFile = new File([blob], 'pdf-preview.jpeg', { type: 'image/jpeg' });
+
+    return { blob: imageFile, error: null };
+  } catch (error: any) {
+    console.error("Error converting PDF to image:", error);
+    return { blob: null, error: error.message || 'Failed to convert PDF to image' };
   }
-  
-  const pdfBlob = pdf.output('blob');
-  const pdfUrl = URL.createObjectURL(pdfBlob);
-  return pdfUrl;
+};
+
+export const handleFileConversion = async (
+  conversion: FileConversion,
+  onProgress?: (progress: number) => void
+): Promise<FileConversionResult> => {
+  try {
+    if (conversion.type === 'image') {
+      const blob = await convertImageToPdf(conversion.file, onProgress);
+      return { blob, error: null };
+    } else if (conversion.type === 'pdf') {
+      const result = await convertPdfToImage(conversion.file);
+      if (result.blob) {
+        const blob = await convertImageToPdf(new File([result.blob], "temp.jpeg", { type: 'image/jpeg' }), onProgress);
+        return { blob, error: null };
+      } else {
+        return { blob: null, error: result.error };
+      }
+    } else {
+      return { blob: null, error: 'Unsupported file type' };
+    }
+  } catch (error: any) {
+    console.error("File conversion error:", error);
+    return { blob: null, error: error.message || 'File conversion failed' };
+  }
 };
