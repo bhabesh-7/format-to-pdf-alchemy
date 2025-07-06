@@ -1,8 +1,8 @@
 
 import React, { useState } from 'react';
-import { Play, Loader2, CheckCircle, Eye } from 'lucide-react';
+import { Play, Loader2, CheckCircle, Eye, Combine } from 'lucide-react';
 import { UploadedFile } from '@/pages/Index';
-import { convertToPDF } from '@/utils/pdfConverter';
+import { convertToPDF, convertImagesToPdf } from '@/utils/pdfConverter';
 
 interface ConversionProgressProps {
   files: UploadedFile[];
@@ -20,9 +20,11 @@ export const ConversionProgress: React.FC<ConversionProgressProps> = ({
   const [progress, setProgress] = useState(0);
   const [currentFile, setCurrentFile] = useState<string>('');
   const [isOcrProcessing, setIsOcrProcessing] = useState(false);
+  const [mergeImages, setMergeImages] = useState(false);
 
   const pendingFiles = files.filter(file => file.status === 'pending');
   const completedFiles = files.filter(file => file.status === 'completed');
+  const pendingImages = pendingFiles.filter(file => file.type === 'image');
 
   const startConversion = async () => {
     if (pendingFiles.length === 0) return;
@@ -30,14 +32,55 @@ export const ConversionProgress: React.FC<ConversionProgressProps> = ({
     onStartConversion(true);
     setProgress(0);
 
-    for (let i = 0; i < pendingFiles.length; i++) {
-      const file = pendingFiles[i];
+    // Handle image merging if enabled and there are multiple images
+    if (mergeImages && pendingImages.length > 1) {
+      try {
+        setCurrentFile('Merging images into single PDF...');
+        setIsOcrProcessing(true);
+        
+        const imageFiles = pendingImages.map(f => f.file);
+        const mergedPdfBlob = await convertImagesToPdf(imageFiles, (progress) => {
+          setProgress(progress * 0.8);
+        });
+        
+        const pdfUrl = URL.createObjectURL(mergedPdfBlob);
+        
+        // Mark all images as completed with the same merged PDF
+        pendingImages.forEach(file => {
+          onUpdateStatus(file.id, 'completed', pdfUrl);
+        });
+        
+        setIsOcrProcessing(false);
+        setProgress(80);
+        
+        // Process remaining non-image files
+        const nonImageFiles = pendingFiles.filter(file => file.type !== 'image');
+        await processRemainingFiles(nonImageFiles, 80);
+        
+      } catch (error) {
+        console.error('Merge conversion error:', error);
+        setIsOcrProcessing(false);
+        pendingImages.forEach(file => {
+          onUpdateStatus(file.id, 'error');
+        });
+      }
+    } else {
+      // Regular individual conversion
+      await processRemainingFiles(pendingFiles, 0);
+    }
+
+    onStartConversion(false);
+    setCurrentFile('');
+  };
+
+  const processRemainingFiles = async (filesToProcess: typeof pendingFiles, startProgress: number) => {
+    for (let i = 0; i < filesToProcess.length; i++) {
+      const file = filesToProcess[i];
       setCurrentFile(file.name);
       
       try {
         onUpdateStatus(file.id, 'converting');
         
-        // Show OCR processing status for images
         if (file.type === 'image') {
           setIsOcrProcessing(true);
         }
@@ -47,9 +90,9 @@ export const ConversionProgress: React.FC<ConversionProgressProps> = ({
         setIsOcrProcessing(false);
         onUpdateStatus(file.id, 'completed', pdfUrl);
         
-        setProgress(((i + 1) / pendingFiles.length) * 100);
+        const currentProgress = startProgress + ((i + 1) / filesToProcess.length) * (100 - startProgress);
+        setProgress(currentProgress);
         
-        // Add a small delay for better UX
         await new Promise(resolve => setTimeout(resolve, 500));
         
       } catch (error) {
@@ -58,9 +101,6 @@ export const ConversionProgress: React.FC<ConversionProgressProps> = ({
         onUpdateStatus(file.id, 'error');
       }
     }
-
-    onStartConversion(false);
-    setCurrentFile('');
   };
 
   if (pendingFiles.length === 0 && completedFiles.length === 0) {
@@ -100,16 +140,37 @@ export const ConversionProgress: React.FC<ConversionProgressProps> = ({
         )}
 
         {!isConverting && pendingFiles.length > 0 && (
-          <div className="space-y-2">
+          <div className="space-y-4">
+            {pendingImages.length > 1 && (
+              <div className="flex items-center justify-center space-x-2 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                <input
+                  type="checkbox"
+                  id="mergeImages"
+                  checked={mergeImages}
+                  onChange={(e) => setMergeImages(e.target.checked)}
+                  className="h-4 w-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
+                />
+                <label htmlFor="mergeImages" className="flex items-center space-x-2 text-sm text-blue-700 font-medium cursor-pointer">
+                  <Combine className="h-4 w-4" />
+                  <span>Merge {pendingImages.length} images into single PDF</span>
+                </label>
+              </div>
+            )}
+            
             <button
               onClick={startConversion}
               className="inline-flex items-center space-x-2 bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 text-white px-6 py-3 rounded-lg font-medium transition-all duration-200 transform hover:scale-105"
             >
               <Play className="h-5 w-5" />
-              <span>Convert {pendingFiles.length} Files to PDF</span>
+              <span>
+                {mergeImages && pendingImages.length > 1 
+                  ? `Merge Images & Convert ${pendingFiles.length} Files` 
+                  : `Convert ${pendingFiles.length} Files to PDF`
+                }
+              </span>
             </button>
             <p className="text-xs text-gray-500">
-              Images will be processed with OCR for text extraction
+              Images will be processed with OCR for text extraction{mergeImages && pendingImages.length > 1 ? ' and merged into a single high-quality PDF' : ''}
             </p>
           </div>
         )}
