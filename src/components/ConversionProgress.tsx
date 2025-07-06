@@ -21,6 +21,7 @@ export const ConversionProgress: React.FC<ConversionProgressProps> = ({
   const [currentFile, setCurrentFile] = useState<string>('');
   const [isOcrProcessing, setIsOcrProcessing] = useState(false);
   const [mergeImages, setMergeImages] = useState(false);
+  const [enableOCR, setEnableOCR] = useState(true);
 
   const pendingFiles = files.filter(file => file.status === 'pending');
   const completedFiles = files.filter(file => file.status === 'completed');
@@ -36,10 +37,12 @@ export const ConversionProgress: React.FC<ConversionProgressProps> = ({
     if (mergeImages && pendingImages.length > 1) {
       try {
         setCurrentFile('Merging images into single PDF...');
-        setIsOcrProcessing(true);
+        if (enableOCR && mergeImages && pendingImages.length > 1) {
+          setIsOcrProcessing(true);
+        }
         
         const imageFiles = pendingImages.map(f => f.file);
-        const mergedPdfBlob = await convertImagesToPdf(imageFiles, (progress) => {
+        const mergedPdfBlob = await convertImagesToPdf(imageFiles, enableOCR, (progress) => {
           setProgress(progress * 0.8);
         });
         
@@ -81,11 +84,11 @@ export const ConversionProgress: React.FC<ConversionProgressProps> = ({
       try {
         onUpdateStatus(file.id, 'converting');
         
-        if (file.type === 'image') {
+        if (file.type === 'image' && enableOCR) {
           setIsOcrProcessing(true);
         }
         
-        const pdfUrl = await convertToPDF(file.file, file.type);
+        const pdfUrl = await convertToPDF(file.file, file.type, enableOCR);
         
         setIsOcrProcessing(false);
         onUpdateStatus(file.id, 'completed', pdfUrl);
@@ -130,7 +133,7 @@ export const ConversionProgress: React.FC<ConversionProgressProps> = ({
                 Processing: {currentFile}
               </p>
             )}
-            {isOcrProcessing && (
+            {isOcrProcessing && enableOCR && (
               <div className="inline-flex items-center space-x-2 text-blue-600">
                 <Eye className="h-4 w-4 animate-pulse" />
                 <span className="text-sm">Extracting text with OCR...</span>
@@ -141,6 +144,22 @@ export const ConversionProgress: React.FC<ConversionProgressProps> = ({
 
         {!isConverting && pendingFiles.length > 0 && (
           <div className="space-y-4">
+            {pendingImages.length > 0 && (
+              <div className="flex items-center justify-center space-x-2 p-3 bg-green-50 rounded-lg border border-green-200">
+                <input
+                  type="checkbox"
+                  id="enableOCR"
+                  checked={enableOCR}
+                  onChange={(e) => setEnableOCR(e.target.checked)}
+                  className="h-4 w-4 text-green-600 rounded border-gray-300 focus:ring-green-500"
+                />
+                <label htmlFor="enableOCR" className="flex items-center space-x-2 text-sm text-green-700 font-medium cursor-pointer">
+                  <Eye className="h-4 w-4" />
+                  <span>Enable OCR text extraction for images</span>
+                </label>
+              </div>
+            )}
+            
             {pendingImages.length > 1 && (
               <div className="flex items-center justify-center space-x-2 p-3 bg-blue-50 rounded-lg border border-blue-200">
                 <input
@@ -170,7 +189,7 @@ export const ConversionProgress: React.FC<ConversionProgressProps> = ({
               </span>
             </button>
             <p className="text-xs text-gray-500">
-              Images will be processed with OCR for text extraction{mergeImages && pendingImages.length > 1 ? ' and merged into a single high-quality PDF' : ''}
+              {enableOCR ? 'Images will be processed with OCR for text extraction' : 'Images will be converted without OCR text extraction'}{mergeImages && pendingImages.length > 1 ? ' and merged into a single high-quality PDF' : ''}
             </p>
           </div>
         )}

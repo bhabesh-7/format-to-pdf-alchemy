@@ -85,6 +85,7 @@ const addOCRTextToPDF = (
 
 export const convertImagesToPdf = async (
   files: File[], 
+  enableOCR: boolean = true,
   onProgress?: (progress: number) => void
 ): Promise<Blob> => {
   const pdf = new jsPDF({
@@ -139,14 +140,18 @@ export const convertImagesToPdf = async (
 
           try {
             // Perform OCR for text layer
-            const ocrResult = await performOCR(canvas, (progress) => {
-              const totalProgress = ((i + progress * 0.8) / files.length) * 100;
-              onProgress?.(totalProgress);
-            });
+            if (enableOCR) {
+              const ocrResult = await performOCR(canvas, (progress) => {
+                const totalProgress = ((i + progress * 0.8) / files.length) * 100;
+                onProgress?.(totalProgress);
+              });
 
-            addOCRTextToPDF(pdf, ocrResult, canvas.width, canvas.height, pdfWidth, pdfHeight);
+              addOCRTextToPDF(pdf, ocrResult, canvas.width, canvas.height, pdfWidth, pdfHeight);
+            }
           } catch (ocrError) {
-            console.warn('OCR failed for image', i + 1, ocrError);
+            if (enableOCR) {
+              console.warn('OCR failed for image', i + 1, ocrError);
+            }
           }
 
           const totalProgress = ((i + 1) / files.length) * 100;
@@ -169,15 +174,16 @@ export const convertImagesToPdf = async (
 export const convertToPDF = async (
   file: File, 
   type: 'image' | 'document',
+  enableOCR: boolean = true,
   onProgress?: (progress: number) => void
 ): Promise<string> => {
   if (type === 'image') {
-    const blob = await convertImageToPdf(file, onProgress);
+    const blob = await convertImageToPdf(file, enableOCR, onProgress);
     return URL.createObjectURL(blob);
   } else {
     const result = await convertPdfToImage(file);
     if (result.blob) {
-      const blob = await convertImageToPdf(new File([result.blob], "temp.jpeg", { type: 'image/jpeg' }), onProgress);
+      const blob = await convertImageToPdf(new File([result.blob], "temp.jpeg", { type: 'image/jpeg' }), enableOCR, onProgress);
       return URL.createObjectURL(blob);
     } else {
       throw new Error(result.error || 'Conversion failed');
@@ -187,6 +193,7 @@ export const convertToPDF = async (
 
 export const convertImageToPdf = async (
   file: File, 
+  enableOCR: boolean = true,
   onProgress?: (progress: number) => void
 ): Promise<Blob> => {
   return new Promise((resolve, reject) => {
@@ -226,17 +233,21 @@ export const convertImageToPdf = async (
 
         try {
           // Perform OCR
-          onProgress?.(0);
-          const ocrResult = await performOCR(canvas, (progress) => {
-            onProgress?.(progress * 0.8); // OCR takes 80% of the progress
-          });
+          if (enableOCR) {
+            onProgress?.(0);
+            const ocrResult = await performOCR(canvas, (progress) => {
+              onProgress?.(progress * 0.8); // OCR takes 80% of the progress
+            });
 
-          // Add invisible text layer for copy functionality
-          addOCRTextToPDF(pdf, ocrResult, canvas.width, canvas.height, pdfWidth, pdfHeight);
+            // Add invisible text layer for copy functionality
+            addOCRTextToPDF(pdf, ocrResult, canvas.width, canvas.height, pdfWidth, pdfHeight);
+          }
           
           onProgress?.(100);
         } catch (ocrError) {
-          console.warn('OCR failed, creating PDF without text layer:', ocrError);
+          if (enableOCR) {
+            console.warn('OCR failed, creating PDF without text layer:', ocrError);
+          }
           onProgress?.(100);
         }
 
@@ -294,12 +305,12 @@ export const handleFileConversion = async (
 ): Promise<FileConversionResult> => {
   try {
     if (conversion.type === 'image') {
-      const blob = await convertImageToPdf(conversion.file, onProgress);
+      const blob = await convertImageToPdf(conversion.file, true, onProgress);
       return { blob, error: null };
     } else if (conversion.type === 'pdf') {
       const result = await convertPdfToImage(conversion.file);
       if (result.blob) {
-        const blob = await convertImageToPdf(new File([result.blob], "temp.jpeg", { type: 'image/jpeg' }), onProgress);
+        const blob = await convertImageToPdf(new File([result.blob], "temp.jpeg", { type: 'image/jpeg' }), true, onProgress);
         return { blob, error: null };
       } else {
         return { blob: null, error: result.error };
